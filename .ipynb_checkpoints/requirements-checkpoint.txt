@@ -1,0 +1,8 @@
+seaborn
+wordcloud
+torcheval
+nltk
+scikit-learn
+openpyxl
+transformers
+bcolors
