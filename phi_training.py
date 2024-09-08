@@ -1,189 +1,111 @@
-import torch
+from openai import OpenAI
+import csv
 import pandas as pd
-import numpy as np
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-from transformers import PhiForTokenClassification, PhiConfig, Trainer, TrainingArguments, AutoTokenizer
-from sklearn.metrics import f1_score, confusion_matrix
+
+
+
+
+import csv
 import re
-import seaborn as sns
-import matplotlib.pyplot as plt
-import os
 
-phi_model = "microsoft/phi-2"
-# Load the pretrained Phi tokenizer
-tokenizer = AutoTokenizer.from_pretrained(phi_model)
-# Add a pad token if it doesn't exist
-if tokenizer.pad_token is None:
-    tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-# Define Custom Dataset
-# Define Custom Dataset for sequence-level labels
-class CustomDataset(Dataset):
-    def __init__(self, texts, labels, tokenizer, max_length=512):
-        self.texts = texts
-        self.labels = labels  # Single label for each sequence
-        self.tokenizer = tokenizer
-        self.max_length = max_length
+# Function to clean and filter out non-plain text content from abstracts# Function to extract text within ```plaintext``` blocks
+def extract_plaintext(text):
+    # Regular expression to extract content within ```plaintext``` blocks
+    matches = re.findall(r'```plaintext(.*?)```', text, re.DOTALL)
+    # Join all matches (if there are multiple blocks of ```plaintext```)
+    extracted_text = ' '.join([match.strip() for match in matches])
+    return extracted_text
+# Function to parse the CSV and clean the plaintext in the 'Abstract' column
+def parse_and_filter_csv(input_csv, output_csv):
+    with open(input_csv, mode='r', encoding='utf-8') as infile, open(output_csv, mode='w', newline='', encoding='utf-8') as outfile:
+        reader = csv.DictReader(infile)
+        fieldnames = reader.fieldnames  # Keep the same fieldnames
+        writer = csv.DictWriter(outfile, fieldnames=fieldnames)
+        
+        writer.writeheader()
+        
+        for row in reader:
+            # Clean the 'Abstract' column
+            row['Abstract'] = extract_plaintext(row['Abstract'])
+            writer.writerow(row)
 
-    def __len__(self):
-        return len(self.texts)
+    print(f"Filtered data saved to {output_csv}")
 
-    def __getitem__(self, idx):
-        text = self.texts[idx]
-        label = self.labels[idx]  # This is a single integer label, not a list
+# Function to generate synthetic data using OpenAI API
+def generate_synthetic_text(category, domain, num_samples=10):
+    generated_texts = []
 
-        encoding = self.tokenizer(
-            text,
-            padding='max_length',
-            truncation=True,
-            max_length=self.max_length,
-            return_tensors='pt'
-        )
+    # Create the prompt
+    prompt = f"""
+I have five classifications for a dataset based on abstracts, with a set of commonly associated words for each class. Generate synthetic abstracts for each classification (Civil, MAE, CS, ECE, Psychology), ensuring that the provided common words for each class are naturally included in a coherent way. These abstracts should resemble real-world scientific abstracts and vary in structure, style, and focus. Each abstract should be detailed and extensive, simulating the depth found in academic papers (at least 500 words).
 
-        return {
-            'input_ids': encoding['input_ids'].squeeze(),
-            'attention_mask': encoding['attention_mask'].squeeze(),
-            'labels': torch.tensor(label, dtype=torch.long)  # Single label, no list
-        }
-# Preprocessing function for text
-def preprocess_text(text):
-    text = text.lower()
-    text = re.sub(r"[^a-zA-Z0-9\s]", "", text)
-    return text
+The output should be a Python list of dictionaries with the following structure:
+data = [
+    {{
+        "Y1": {category},
+        "Domain": "{domain}",
+        "Abstract": "<generated synthetic abstract>"
+    }},
+    # Add more entries for each classification...
+]
+    """
+    client = OpenAI()
+    # Use the OpenAI API to generate the abstract
+    response = client.chat.completions.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": prompt}],
+        n=num_samples
+    )
 
-# Load dataset
-def load_data(train_path, valid_path, test_path):
-    train_data = pd.read_csv(train_path)
-    valid_data = pd.read_csv(valid_path)
-    test_data = pd.read_csv(test_path)
-    return train_data, valid_data, test_data
+    # Parse response
+    for choice in response.choices:
+        generated_texts.append({
+            'Y1': category,
+            'Domain': domain,
+            'Abstract': choice.message.content.strip()
+        })
 
-# Preprocess data
-def preprocess_dataset(train_data, valid_data, test_data):
-    train_data['Abstract'] = train_data['Abstract'].apply(preprocess_text)
-    valid_data['Abstract'] = valid_data['Abstract'].apply(preprocess_text)
-    test_data['Abstract'] = test_data['Abstract'].apply(preprocess_text)
-    return train_data, valid_data, test_data
+    return generated_texts
 
-# Prepare datasets
-def prepare_datasets(train_data, valid_data, test_data, tokenizer):
-    X_train = train_data['Abstract'].values
-    y_train = train_data['Y1'].values
-
-    X_val = valid_data['Abstract'].values
-    y_val = valid_data['Y1'].values
-
-    X_test = test_data['Abstract'].values
-    y_test = test_data['Y1'].values
-
-    train_dataset = CustomDataset(X_train, y_train, tokenizer)
-    val_dataset = CustomDataset(X_val, y_val, tokenizer)
-    test_dataset = CustomDataset(X_test, y_test, tokenizer)
-
-    return train_dataset, val_dataset, test_dataset
-
-# Define the metrics computation function
-def compute_metrics(p):
-    pred, labels = p
-    pred = np.argmax(pred, axis=1)
-    f1 = f1_score(labels, pred, average='weighted')
-    cm = confusion_matrix(labels, pred)
+# Function to format data and save it to a CSV file
+def save_to_csv(data, filename='generated_abstracts.csv'):
+    # Define the CSV file fieldnames
+    fieldnames = ['Y1', 'Domain', 'Abstract']
     
-    # Convert confusion matrix to a list for JSON serialization
-    return {
-        'f1': f1,
-        'confusion_matrix': cm.tolist()  # Convert NumPy array to list
-    }
+    # Write the data to a CSV file
+    with open(filename, mode='w', newline='', encoding='utf-8') as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(data)
 
-# Define confusion matrix plotting
-def plot_confusion_matrix(cm):
-    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
-    plt.ylabel('Actual')
-    plt.xlabel('Predicted')
-    plt.title('Confusion Matrix')
-    plt.show()
+    print(f"Data successfully saved to {filename}")
 
-# Load the Phi model for token classification
-def load_phi_model():
-    # Load the Phi model configuration
-    config = PhiConfig.from_pretrained("microsoft/phi-2")
-
-    # Load the Phi model for token classification
-    model = PhiForTokenClassification.from_pretrained("microsoft/phi-2", config=config)
-
-    return model
-
-# Train the model using CUDA (if available)
-def train_model(train_dataset, val_dataset, model):
-    # Check if CUDA is available and set the device accordingly
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
-    print(f"Using device: {device}")
-
-    # Check for the latest checkpoint
-    last_checkpoint = None
-    if os.path.isdir('./results'):
-        checkpoints = [d for d in os.listdir('./results') if d.startswith('checkpoint')]
-        if checkpoints:
-            last_checkpoint = os.path.join('./results', sorted(checkpoints)[-1])
-            print(f"Resuming from checkpoint: {last_checkpoint}")
-
-    # Define training arguments
-    training_args = TrainingArguments(
-        output_dir='./results',
-        evaluation_strategy="epoch",
-        learning_rate=2e-5,
-        per_device_train_batch_size=2,
-        per_device_eval_batch_size=2,
-        num_train_epochs=3,
-        weight_decay=0.01,
-        logging_dir='./logs',
-        fp16=True,  # Enable mixed precision training for faster training on CUDA
-        save_strategy="epoch",  # Save checkpoint after every epoch
-        resume_from_checkpoint=last_checkpoint if last_checkpoint else None,  # Resume from checkpoint if available
-    )
-
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_dataset,
-        eval_dataset=val_dataset,
-        compute_metrics=compute_metrics
-    )
-
-    trainer.train(resume_from_checkpoint=last_checkpoint if last_checkpoint else None)
-    return trainer
-
-# Main function
+# Main function to generate synthetic abstracts and save to CSV
 def main():
-    # Load and preprocess data
-    train_data, valid_data, test_data = load_data(
-        'data/train_data.csv',
-        'data/valid_data.csv',
-        'data/test_data.csv'
-    )
+    # Define the classifications and associated Y1 values
+    classifications = [
+        {'category': 4, 'domain': 'Civil'},
+        {'category': 3, 'domain': 'MAE'},
+        {'category': 0, 'domain': 'CS'},
+        {'category': 1, 'domain': 'ECE'},
+        {'category': 2, 'domain': 'Psychology'}
+    ]
+    
+    # # Collect generated abstracts for each classification
+    # all_data = []
+    # for cls in classifications:
+    #     data = generate_synthetic_text(cls['category'], cls['domain'], num_samples=5)
+    #     all_data.extend(data)
 
-    train_data, valid_data, test_data = preprocess_dataset(train_data, valid_data, test_data)
+    # # Save the generated data to CSV
+    # save_to_csv(all_data)
+    input_csv = 'synthetic_data.csv'  # Input CSV with generated abstracts
+    output_csv = 'filtered_abstracts.csv'  # Output CSV after filtering plaintext
+    
+    # Parse and filter the CSV
+    parse_and_filter_csv(input_csv, output_csv)
 
-    # Prepare datasets
-    train_dataset, val_dataset, test_dataset = prepare_datasets(train_data, valid_data, test_data, tokenizer)
 
-    # Load the Phi model for token classification
-    model = load_phi_model()
 
-    # Train the model
-    trainer = train_model(train_dataset, val_dataset, model)
-
-    # Evaluate the model
-    eval_results = trainer.evaluate()
-
-    # Perform manual prediction to compute the confusion matrix
-    predictions = trainer.predict(val_dataset)
-    metrics = compute_metrics((predictions.predictions, predictions.label_ids))
-
-    # Plot confusion matrix
-    plot_confusion_matrix(metrics['confusion_matrix'])
-
-# Run the main function
 if __name__ == "__main__":
     main()

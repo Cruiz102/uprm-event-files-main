@@ -10,7 +10,8 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import os
 model_name = "allenai/scibert_scivocab_uncased"
-checkpoints_folder = "scibert"
+checkpoints_folder = ""
+output_dir = './scibert2'
 # Load the pretrained BERT model and tokenizer
 tokenizer = BertTokenizer.from_pretrained(model_name)
 
@@ -131,22 +132,27 @@ def train_model(train_dataset, val_dataset, model):
         if checkpoints:
             last_checkpoint = os.path.join(checkpoints_folder, sorted(checkpoints)[-1])
             print(f"Resuming from checkpoint: {last_checkpoint}")
-
-    # Define training arguments
+    # Define the combined training arguments with TensorBoard logging
     training_args = TrainingArguments(
-        output_dir='./scibert',
-        evaluation_strategy="epoch",
-        learning_rate=2e-5,
-        per_device_train_batch_size=64,
-        per_device_eval_batch_size=64,
-        num_train_epochs=10,
-        weight_decay=0.01,
-        logging_dir='./logs',
-        fp16=True,  # Enable mixed precision training for faster training on CUDA
-        save_strategy="epoch",  # Save checkpoint after every epoch
-        resume_from_checkpoint=last_checkpoint if last_checkpoint else None,
+        output_dir=output_dir,                 # Directory to save model and logs
+        evaluation_strategy="epoch",           # Evaluate after every epoch
+        learning_rate=2e-5,                    # Learning rate
+        per_device_train_batch_size=64,        # Batch size for training
+        per_device_eval_batch_size=64,         # Batch size for evaluation
+        num_train_epochs=20,                   # Number of epochs
+        weight_decay=0.01,                     # Weight decay for optimizer
+        logging_dir='./logs',                  # Directory for TensorBoard logs
+        logging_steps=100,                     # Log every 100 steps
+        save_strategy="epoch",                 # Save checkpoint after every epoch
+        save_total_limit=2,                    # Keep only the last 2 checkpoints
+        fp16=True,                             # Enable mixed precision training (faster on CUDA)
+        resume_from_checkpoint=last_checkpoint if last_checkpoint else None,  # Resume from last checkpoint if available
+        report_to="tensorboard",               # Report to TensorBoard
+        logging_first_step=True,               # Log on the first step
+        eval_steps=100,                        # Evaluate every 500 steps (only if needed)
     )
 
+    # Create the Trainer
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -155,9 +161,9 @@ def train_model(train_dataset, val_dataset, model):
         compute_metrics=compute_metrics
     )
 
+    # Start training
     trainer.train(resume_from_checkpoint=last_checkpoint if last_checkpoint else None)
     return trainer
-
 # Main function
 def main():
     # Load and preprocess data

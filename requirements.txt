@@ -1,10 +1,9 @@
 seaborn
-wordcloud
 torcheval
-torch
+transformers[torch]
+accelerate>=0.21.0
 nltk
 scikit-learn
-openpyxl
 transformers
-bcolors
 openai
+tensorboard
